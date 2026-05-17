@@ -1,12 +1,5 @@
-# app.py — ChurnPredict Dashboard Backend (OPTIMIZED)
-# =========================================================
-# PERUBAHAN UTAMA vs versi lama:
-#   1. Ganti df.iterrows() → operasi vektorisasi pandas (10-50x lebih cepat)
-#   2. Ganti predict_churn() per-baris → batch predict_proba() sekaligus
-#   3. Upload async: langsung return, frontend polling /api/upload/status
-#   4. Hilangkan definisi fungsi di dalam loop
-# =========================================================
 
+# Import library 
 from flask import Flask, render_template, request, jsonify, send_file
 import pandas as pd
 import numpy as np
@@ -21,13 +14,13 @@ import traceback
 
 app = Flask(__name__)
 
-# ── Custom JSON encoder: NaN/Inf → null ─────────────────
+# Custom JSON encoder
 import math, json as _json
 class _SafeJSONProvider(app.json_provider_class):
     def dumps(self, obj, **kw):
-        # Serialisasi dulu ke string, lalu ganti NaN/Infinity ke null
+  
         raw = super().dumps(obj, **kw)
-        # Ganti literal NaN dan Infinity yang lolos dari encoder standar
+   
         raw = raw.replace(': NaN',  ': null') \
                  .replace(':NaN',   ':null') \
                  .replace(': Infinity',  ': null') \
@@ -39,20 +32,20 @@ class _SafeJSONProvider(app.json_provider_class):
 app.json_provider_class = _SafeJSONProvider
 app.json = _SafeJSONProvider(app)
 
-# ── Config ──────────────────────────────────────────────
+# Config
 UPLOAD_FOLDER = 'uploads'
 ALLOWED_EXTENSIONS = {'csv'}
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# ── Global State ────────────────────────────────────────
+#Global State
 customers_data = []
 current_csv_filename = None
 model = None
 model_type_name = "Not loaded"
 
 # Status tracker untuk async upload
-upload_jobs = {}  # job_id -> { status, progress, message, error }
+upload_jobs = {} 
 
 # ── Feature Mapping ──────────────────────────────────────
 FEATURE_MAPPING = {
@@ -86,7 +79,7 @@ EXTRA_COLUMN_MAPPING = {
     'churn':            ['churn', 'churned', 'is_churn', 'churn_status', 'churn_label'],
 }
 
-# ── Load Model ───────────────────────────────────────────
+# Load Model
 MODEL_PATH = "model_churn.pkl"
 
 def load_model():
@@ -105,7 +98,7 @@ def load_model():
 
 load_model()
 
-# ── Helpers ──────────────────────────────────────────────
+# Helpers
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
@@ -116,7 +109,7 @@ def find_column(df_columns, candidates):
             return lower_cols[cand.lower()]
     return None
 
-# ── Vektorisasi Helpers ──────────────────────────────────
+# Vektorisasi Helpers 
 def vec_normalize_segment(series: pd.Series) -> pd.Series:
     s = series.astype(str).str.lower()
     result = pd.Series('Standard', index=series.index)
@@ -184,7 +177,7 @@ def rule_based_churn_prob_vectorized(df: pd.DataFrame) -> pd.Series:
 
     return score.clip(0.02, 0.97)
 
-# ── Batch Prediction ─────────────────────────────────────
+# Batch Prediction
 def predict_batch(df: pd.DataFrame) -> tuple:
     """
     Prediksi churn untuk seluruh DataFrame sekaligus.
@@ -236,7 +229,7 @@ def predict_batch(df: pd.DataFrame) -> tuple:
                           labels=['low', 'medium', 'high'])
     return proba_series, risk_series
 
-# ── CSV Processing (VEKTORISASI) ─────────────────────────
+# CSV Processing (VEKTORISASI)
 def process_customer_data(df: pd.DataFrame, job_id: str = None) -> list:
     """
     Proses seluruh DataFrame dengan operasi vektorisasi pandas.
@@ -254,7 +247,7 @@ def process_customer_data(df: pd.DataFrame, job_id: str = None) -> list:
 
     update_job(5, "Mendeteksi kolom...")
 
-    # ── Resolve column names ──────────────────────────────
+    #Resolve column names 
     all_candidates = {**FEATURE_MAPPING, **EXTRA_COLUMN_MAPPING}
     col_map = {}
     for key, candidates in all_candidates.items():
@@ -264,7 +257,7 @@ def process_customer_data(df: pd.DataFrame, job_id: str = None) -> list:
 
     print(f"✅ Resolved columns: {col_map}")
 
-    # ── Helper: ambil kolom atau buat Series default ──────
+    # Helper: ambil kolom atau buat Series default 
     def col(key, default=None):
         if key in col_map:
             return df[col_map[key]]
@@ -276,7 +269,7 @@ def process_customer_data(df: pd.DataFrame, job_id: str = None) -> list:
 
     update_job(15, "Memproses kolom identitas...")
 
-    # ── Identity ──────────────────────────────────────────
+    # Identity 
     n = len(df)
     auto_ids = pd.Series([f'CUS-{i+1:04d}' for i in range(n)], index=df.index)
     cust_id  = col('customer_id').astype(str).replace(['nan', '', 'None'], np.nan).fillna(auto_ids)
@@ -292,13 +285,13 @@ def process_customer_data(df: pd.DataFrame, job_id: str = None) -> list:
 
     update_job(25, "Memproses segmen & kontrak...")
 
-    # ── Segment / Contract ────────────────────────────────
+    #Segment / Contract 
     segment  = vec_normalize_segment(col('customer_segment', 'Standard'))
     contract = vec_normalize_contract(col('contract_type', 'Monthly'))
 
     update_job(35, "Memproses data numerik...")
 
-    # ── Numeric ───────────────────────────────────────────
+    #Numeric 
     tenure     = vec_safe_int(col('tenure_months', 12), 12)
     logins     = vec_safe_int(col('monthly_logins', 10), 10)
     last_login = vec_safe_int(col('last_login', 30), 30)
@@ -323,14 +316,14 @@ def process_customer_data(df: pd.DataFrame, job_id: str = None) -> list:
 
     update_job(45, "Memproses data kategorik...")
 
-    # ── Categorical ───────────────────────────────────────
+    # Categorical
     complaint_type = col('complaint_type', 'None').astype(str)
     complaint_type = complaint_type.where(~complaint_type.isin(['nan', '', 'None', 'NaN']), 'None')
 
     signup_channel = col('signup_channel', 'Organic').astype(str)
     signup_channel = signup_channel.where(~signup_channel.isin(['nan', '', 'None', 'NaN']), 'Organic')
 
-    # ── Churn label ───────────────────────────────────────
+    # Churn label
     if 'churn' in col_map:
         churn_raw = df[col_map['churn']].astype(str).str.lower()
         churn_label = churn_raw.isin(['1', 'true', 'yes', 'churned', 'churn', 'ya']).astype(int)
@@ -341,7 +334,7 @@ def process_customer_data(df: pd.DataFrame, job_id: str = None) -> list:
 
     update_job(55, "Menjalankan prediksi AI (batch)...")
 
-    # ── Build working DataFrame untuk prediksi ────────────
+    # Build working DataFrame untuk prediksi
     work_df = pd.DataFrame({
         'customer_segment':    segment,
         'contract_type':       contract,
@@ -361,7 +354,7 @@ def process_customer_data(df: pd.DataFrame, job_id: str = None) -> list:
         'avg_resolution_time': res_time,
     }, index=df.index)
 
-    # ── BATCH PREDICTION (satu kali untuk semua baris) ────
+    #BATCH PREDICTION (satu kali untuk semua baris)
     churn_prob, risk = predict_batch(work_df)
 
     update_job(80, "Menyusun hasil akhir...")
@@ -371,7 +364,7 @@ def process_customer_data(df: pd.DataFrame, job_id: str = None) -> list:
     unknown_mask = ~churn_known
     final_churn[unknown_mask] = (churn_prob[unknown_mask] > 0.5).astype(int)
 
-    # ── Bangun list of dicts (TANPA iterrows) ─────────────
+    #Bangun list of dicts (TANPA iterrows)
     result_df = pd.DataFrame({
         'id':                  cust_id.values,
         'name':                name.values,
@@ -403,18 +396,16 @@ def process_customer_data(df: pd.DataFrame, job_id: str = None) -> list:
         'risk':                risk.astype(str).values,
     })
 
-    # Bersihkan NaN/Inf → None sebelum konversi ke dict
-    # NaN tidak valid di JSON (harus null), dan Inf juga tidak valid
     result_df = result_df.replace({np.nan: None, np.inf: None, -np.inf: None})
 
-    # Konversi ke list of dicts (to_dict('records') jauh lebih cepat dari loop)
+    # Konversi ke list of dicts (to_dict('records')
     customers = result_df.to_dict('records')
 
     update_job(95, "Selesai memproses...")
     print(f"✅ Processed {len(customers)} customers")
     return customers
 
-# ── Background Upload Worker ─────────────────────────────
+# Background Upload Worker 
 def run_upload_job(job_id: str, filepath: str, filename: str):
     global customers_data, current_csv_filename
     try:
@@ -448,7 +439,7 @@ def run_upload_job(job_id: str, filepath: str, filename: str):
             'progress': 0,
         })
 
-# ── Routes ───────────────────────────────────────────────
+#Routes
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -488,7 +479,7 @@ def upload_csv():
             'message':  'Upload diterima, menunggu pemrosesan...',
         }
 
-        # Jalankan di background thread — tidak blocking
+        # Jalankan di background thread tidak blocking
         t = threading.Thread(target=run_upload_job, args=(job_id, filepath, filename), daemon=True)
         t.start()
 
@@ -515,7 +506,7 @@ def get_dashboard():
 
     data = customers_data
 
-    # ── Filter ────────────────────────────────────────────
+    # Filter 
     segment = request.args.get('segment', '')
     country = request.args.get('country', '')
     if segment: data = [c for c in data if c.get('customer_segment') == segment]
@@ -524,7 +515,7 @@ def get_dashboard():
     if not data:
         return jsonify({'empty': True})
 
-    # ── Hitung stats dengan pandas (cepat) ───────────────
+    #Hitung stats dengan pandas 
     df = pd.DataFrame(data)
 
     total    = len(df)
@@ -780,7 +771,7 @@ def get_stats():
 
     data = customers_data
 
-    # ── Filter ────────────────────────────────────────────
+    #Filter
     segment_f = request.args.get('segment', '')
     country_f = request.args.get('country', '')
     if segment_f and segment_f != 'all':
@@ -820,7 +811,7 @@ def get_stats():
     at_risk_mrr = round(float(df.loc[df['risk'] == 'high', 'monthly_fee'].sum()), 2)
     arpu        = round(total_mrr / active, 2) if active else 0
 
-    # ── segment_stats sebagai DICT (frontend expects this) ──
+    #segment_stats sebagai DICT
     segment_stats = {}
     for seg_name, grp in df.groupby('customer_segment'):
         ch       = int((grp['churn'] == 1).sum())
@@ -836,7 +827,7 @@ def get_stats():
             'avg_fee':    round(float(grp['monthly_fee'].mean()), 2),
         }
 
-    # ── country_stats sebagai DICT ──
+    #country_stats sebagai DICT
     country_stats = {}
     for cname, grp in df.groupby('country'):
         ch = int((grp['churn'] == 1).sum())
@@ -846,7 +837,7 @@ def get_stats():
             'churn_rate': round(ch / len(grp) * 100, 1),
         }
 
-    # ── contract_stats sebagai DICT ──
+    #contract_stats sebagai DICT 
     contract_stats = {}
     for ctype, grp in df.groupby('contract_type'):
         ch = int((grp['churn'] == 1).sum())
@@ -856,7 +847,7 @@ def get_stats():
             'churn_rate': round(ch / len(grp) * 100, 1),
         }
 
-    # ── channel_stats sebagai DICT ──
+    # channel_stats sebagai DICT
     channel_stats = {}
     for ch_name, grp in df.groupby('signup_channel'):
         ch = int((grp['churn'] == 1).sum())
@@ -866,11 +857,11 @@ def get_stats():
             'churn_rate': round(ch / len(grp) * 100, 1),
         }
 
-    # ── churn_reasons sebagai DICT {reason: count} ──
+    # churn_reasons sebagai DICT {reason: count} 
     reasons_raw  = df.loc[df['churn'] == 1, 'complaint_type'].value_counts()
     churn_reasons = {r: int(c) for r, c in reasons_raw.items() if r != 'None'}
 
-    # ── churn_by_tenure (array — sudah benar) ──
+    #churn_by_tenure 
     bins   = [0, 6, 12, 24, 36, 9999]
     labels = ['0-6m', '6-12m', '12-24m', '24-36m', '36m+']
     df2 = df.copy()
@@ -883,7 +874,7 @@ def get_stats():
             'churn_rate': round(ch / len(grp) * 100, 1) if len(grp) else 0,
         })
 
-    # ── payment_failure_stats (array) ──
+    # payment_failure_stats 
     pf_stats = []
     for f in range(5):
         grp = df[df['payment_failures'] == f] if f < 4 else df[df['payment_failures'] >= 4]
@@ -893,13 +884,13 @@ def get_stats():
             'churn_rate': round(ch / len(grp) * 100, 1) if len(grp) else 0,
         })
 
-    # ── csat_distribution (array) ──
+    #csat_distribution 
     csat_dist = []
     for s in [1, 2, 3, 4, 5]:
         cnt = int((df['csat_score'].round() == s).sum())
         csat_dist.append({'score': s, 'count': cnt, 'pct': round(cnt / total * 100, 1) if total else 0})
 
-    # ── alert_list (top 10 high risk) ──
+    #alert_list (top 10 high risk) 
     alert_df   = df[df['risk'] == 'high'].nlargest(10, 'churn_prob')
     alert_list = alert_df[['id', 'name', 'customer_segment', 'country',
                             'support_tickets', 'last_login', 'csat_score',
@@ -926,13 +917,12 @@ def get_stats():
             'at_risk':  at_risk_mrr,
             'arpu':     arpu,
         },
-        # ↓ Format DICT — sesuai yang diharapkan frontend
+       
         'segment_stats':          segment_stats,
         'country_stats':          country_stats,
         'contract_stats':         contract_stats,
         'channel_stats':          channel_stats,
         'churn_reasons':          churn_reasons,
-        # ↓ Format array — sudah benar
         'churn_by_tenure':        churn_by_tenure,
         'payment_failure_stats':  pf_stats,
         'csat_distribution':      csat_dist,
@@ -955,17 +945,16 @@ def export_csv():
         download_name=f'churn_analysis_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
     )
 
-# ── Main ─────────────────────────────────────────────────
+#Main 
 if __name__ == '__main__':
     print("\n" + "="*65)
-    print("🚀 ChurnPredict — Customer Churn Dashboard (OPTIMIZED)")
+    print("ChurnPredict — Customer Churn Dashboard")
     print("="*65)
-    print(f"📊 Model     : {model_type_name}")
-    print(f"💾 Model path: {MODEL_PATH} ({'found ✅' if os.path.exists(MODEL_PATH) else 'NOT FOUND — using rule-based ⚠️'})")
-    print(f"\n📋 Feature mapping ({len(FEATURE_MAPPING)} features):")
+    print(f"Model     : {model_type_name}")
+    print(f"Model path: {MODEL_PATH} ({'found' if os.path.exists(MODEL_PATH) else 'NOT FOUND — using rule-based'})")
+    print(f"\n Feature mapping ({len(FEATURE_MAPPING)} features):")
     for k in FEATURE_MAPPING:
         print(f"   • {k}")
-    print(f"\n📁 Pastikan index.html ada di folder: templates/")
-    print(f"📍 Open http://localhost:5000")
+    print(f"Open http://localhost:5000")
     print("="*65 + "\n")
     app.run(debug=True, host='0.0.0.0', port=5000)
